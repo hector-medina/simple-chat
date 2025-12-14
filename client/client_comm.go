@@ -1,56 +1,115 @@
 package client
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
-	"strconv"
-	"time"
+	"log"
+	"os"
+	"sync"
 
 	"chat/shared"
+
+	zmq "github.com/pebbe/zmq4"
 )
 
-const serverURL = "http://localhost:8080/message"
+const (
+	defaultServerHost = "localhost"
+)
+
+var (
+	serverHost        = getServerHost()
+	pushServerAddress = fmt.Sprintf("tcp://%s:5555", serverHost)
+	pubServerAddress  = fmt.Sprintf("tcp://%s:5563", serverHost)
+)
+
+func getServerHost() string {
+	if host := os.Getenv("CHAT_SERVER_HOST"); host != "" {
+		return host
+	}
+	return defaultServerHost
+}
+
+var (
+	pushSocket     *zmq.Socket
+	pushSocketOnce sync.Once
+	pushSocketErr  error
+)
+
+func getPushSocket() (*zmq.Socket, error) {
+	pushSocketOnce.Do(func() {
+		var err error
+		pushSocket, err = zmq.NewSocket(zmq.PUSH)
+		if err != nil {
+			pushSocketErr = err
+			return
+		}
+		if err = pushSocket.Connect(pushServerAddress); err != nil {
+			pushSocketErr = err
+		}
+	})
+	return pushSocket, pushSocketErr
+}
 
 // msg: Message -> send_message()
 func SendMessage(msg shared.Message) {
-	data, _ := json.Marshal(msg)
-	http.Post(serverURL, "application/json", bytes.NewBuffer(data))
+	socket, err := getPushSocket()
+	if err != nil {
+		log.Printf("unable to get push socket: %v", err)
+		return
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("unable to marshal message: %v", err)
+		return
+	}
+
+	if _, err := socket.SendBytes(data, 0); err != nil {
+		log.Printf("unable to send message: %v", err)
+	}
 }
 
 // check_message()
 // Message <-
 //
-// Polls the server every 10 seconds and calls message_arrived()
+// Subscribes to the server and calls message_arrived()
 func CheckMessages(p *Participant) {
-	lastID := -1
-	channel := p.Channel()
+	subscriber, err := zmq.NewSocket(zmq.SUB)
+	if err != nil {
+		log.Printf("unable to create subscriber: %v", err)
+		return
+	}
+	defer subscriber.Close()
+
+	if err := subscriber.Connect(pubServerAddress); err != nil {
+		log.Printf("unable to connect subscriber: %v", err)
+		return
+	}
+
+	if err := subscriber.SetSubscribe(p.Channel()); err != nil {
+		log.Printf("unable to subscribe to channel %s: %v", p.Channel(), err)
+		return
+	}
+
 	for {
-		reqURL, err := url.Parse(serverURL)
+		// envelope (channel)
+		if _, err := subscriber.Recv(0); err != nil {
+			log.Printf("unable to receive envelope: %v", err)
+			continue
+		}
+
+		payload, err := subscriber.RecvBytes(0)
 		if err != nil {
-			fmt.Println("invalid server url:", err)
-			return
+			log.Printf("unable to receive payload: %v", err)
+			continue
 		}
-		query := reqURL.Query()
-		query.Set("lastId", strconv.Itoa(lastID))
-		query.Set("channel", channel)
-		reqURL.RawQuery = query.Encode()
 
-		resp, err := http.Get(reqURL.String())
-		if err == nil && resp.StatusCode == http.StatusOK {
-			var msgs []shared.Message
-			json.NewDecoder(resp.Body).Decode(&msgs)
-			resp.Body.Close()
-
-			for _, msg := range msgs {
-				p.MessageArrived(msg)
-				if msg.ID > lastID {
-					lastID = msg.ID
-				}
-			}
+		var msg shared.Message
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			log.Printf("unable to decode payload: %v", err)
+			continue
 		}
-		time.Sleep(10 * time.Second)
+
+		p.MessageArrived(msg)
 	}
 }
