@@ -20,7 +20,7 @@ func NewChat(store *MessageStore) *Chat {
 
 // msg: Message distribute_message() ->
 // Stores message to be delivered
-func (c *Chat) DistributeMessage(msg shared.Message) {
+func (c *Chat) DistributeMessage(msg shared.Message) shared.Message {
 	log.Printf("channel=%s author=%s msg=%q", msg.Channel, msg.Author, msg.Message)
-	c.store.Add(msg)
+	return c.store.Add(msg)
 }

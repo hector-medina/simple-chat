@@ -18,13 +18,14 @@ func NewMessageStore() *MessageStore {
 	return &MessageStore{}
 }
 
-func (ms *MessageStore) Add(msg shared.Message) {
+func (ms *MessageStore) Add(msg shared.Message) shared.Message {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
 	msg.ID = ms.nextID
 	ms.nextID++
 	ms.messages = append(ms.messages, msg)
+	return msg
 }
 
 func (ms *MessageStore) FetchAfter(lastID int, channel string) []shared.Message {

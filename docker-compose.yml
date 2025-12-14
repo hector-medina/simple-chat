@@ -1,0 +1,19 @@
+services:
+  server:
+    build:
+      context: .
+      target: server
+    ports:
+      - "5555:5555"
+      - "5563:5563"
+
+  client:
+    build:
+      context: .
+      target: client
+    depends_on:
+      - server
+    stdin_open: true
+    tty: true
+    environment:
+      - CHAT_SERVER_HOST=server
